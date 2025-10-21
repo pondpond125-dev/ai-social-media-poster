@@ -8,7 +8,7 @@ import * as db from "./db";
 import { generateImage } from "./_core/imageGeneration";
 import { TRPCError } from "@trpc/server";
 import { postToMultiplePlatforms } from "./socialMedia";
-import { facebookPages } from "../drizzle/schema";
+import { facebookPages } from "../drizzle/schema.pg";
 import { eq, and, desc } from "drizzle-orm";
 import { getDb } from "./db";
 

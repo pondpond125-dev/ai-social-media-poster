@@ -1,21 +1,14 @@
 import { eq, desc, and, lte } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import { InsertUser, users, apiConfigs, InsertApiConfig, posts, InsertPost, scheduledPosts, InsertScheduledPost, facebookPages, InsertFacebookPage } from "../drizzle/schema.pg";
+import { drizzle } from "drizzle-orm/mysql2";
+import { InsertUser, users, apiConfigs, InsertApiConfig, posts, InsertPost, scheduledPosts, InsertScheduledPost } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
-let _supabase: SupabaseClient | null = null;
 
-/**
- * Get Drizzle ORM instance for PostgreSQL
- */
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      const client = postgres(process.env.DATABASE_URL);
-      _db = drizzle(client);
+      _db = drizzle(process.env.DATABASE_URL);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
@@ -24,28 +17,6 @@ export async function getDb() {
   return _db;
 }
 
-/**
- * Get Supabase client instance
- */
-export function getSupabase() {
-  if (!_supabase) {
-    const supabaseUrl = process.env.SUPABASE_URL || "https://txjlntoqwdkyqfeswgke.supabase.co";
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR4amxudG9xd2RreXFmZXN3Z2tlIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MTAzNzU0NywiZXhwIjoyMDc2NjEzNTQ3fQ.gDfXPabyFMvUPYwcEllCIip2AucqIziFjloBaqvtaxw";
-    
-    _supabase = createClient(supabaseUrl, supabaseKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    });
-  }
-  return _supabase;
-}
-
-/**
- * Upsert user (insert or update)
- * PostgreSQL uses ON CONFLICT instead of ON DUPLICATE KEY UPDATE
- */
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.id) {
     throw new Error("User ID is required for upsert");
@@ -61,6 +32,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     const values: InsertUser = {
       id: user.id,
     };
+    const updateSet: Record<string, unknown> = {};
 
     const textFields = ["name", "email", "loginMethod"] as const;
     type TextField = (typeof textFields)[number];
@@ -70,34 +42,30 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       if (value === undefined) return;
       const normalized = value ?? null;
       values[field] = normalized;
+      updateSet[field] = normalized;
     };
 
     textFields.forEach(assignNullable);
 
     if (user.lastSignedIn !== undefined) {
       values.lastSignedIn = user.lastSignedIn;
+      updateSet.lastSignedIn = user.lastSignedIn;
     }
-    
     if (user.role === undefined) {
       if (user.id === ENV.ownerId) {
         user.role = 'admin';
         values.role = 'admin';
+        updateSet.role = 'admin';
       }
-    } else {
-      values.role = user.role;
     }
 
-    // PostgreSQL upsert using ON CONFLICT
-    await db
-      .insert(users)
-      .values(values)
-      .onConflictDoUpdate({
-        target: users.id,
-        set: {
-          ...values,
-          lastSignedIn: new Date(),
-        },
-      });
+    if (Object.keys(updateSet).length === 0) {
+      updateSet.lastSignedIn = new Date();
+    }
+
+    await db.insert(users).values(values).onDuplicateKeyUpdate({
+      set: updateSet,
+    });
   } catch (error) {
     console.error("[Database] Failed to upsert user:", error);
     throw error;
@@ -121,16 +89,12 @@ export async function upsertApiConfig(config: InsertApiConfig) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  await db
-    .insert(apiConfigs)
-    .values(config)
-    .onConflictDoUpdate({
-      target: apiConfigs.id,
-      set: {
-        ...config,
-        updatedAt: new Date(),
-      },
-    });
+  await db.insert(apiConfigs).values(config).onDuplicateKeyUpdate({
+    set: {
+      ...config,
+      updatedAt: new Date(),
+    },
+  });
 }
 
 export async function getApiConfig(userId: string) {
@@ -211,54 +175,5 @@ export async function getPendingScheduledPosts(now: Date) {
       lte(scheduledPosts.scheduledTime, now)
     )
   );
-}
-
-// Facebook Pages helpers
-export async function createFacebookPage(page: InsertFacebookPage) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-
-  await db.insert(facebookPages).values(page);
-}
-
-export async function updateFacebookPage(id: string, updates: Partial<InsertFacebookPage>) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-
-  await db.update(facebookPages).set({ ...updates, updatedAt: new Date() }).where(eq(facebookPages.id, id));
-}
-
-export async function deleteFacebookPage(id: string) {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-
-  await db.delete(facebookPages).where(eq(facebookPages.id, id));
-}
-
-export async function getFacebookPage(id: string) {
-  const db = await getDb();
-  if (!db) return undefined;
-
-  const result = await db.select().from(facebookPages).where(eq(facebookPages.id, id)).limit(1);
-  return result.length > 0 ? result[0] : undefined;
-}
-
-export async function getUserFacebookPages(userId: string) {
-  const db = await getDb();
-  if (!db) return [];
-
-  return await db.select().from(facebookPages).where(eq(facebookPages.userId, userId)).orderBy(desc(facebookPages.createdAt));
-}
-
-export async function getActiveFacebookPages(userId: string) {
-  const db = await getDb();
-  if (!db) return [];
-
-  return await db.select().from(facebookPages).where(
-    and(
-      eq(facebookPages.userId, userId),
-      eq(facebookPages.isActive, true)
-    )
-  ).orderBy(desc(facebookPages.createdAt));
 }
 
