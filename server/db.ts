@@ -1,11 +1,10 @@
-import { eq } from "drizzle-orm";
+import { eq, desc, and, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { InsertUser, users, apiConfigs, InsertApiConfig, posts, InsertPost, scheduledPosts, InsertScheduledPost } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
-// Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
@@ -85,4 +84,96 @@ export async function getUser(id: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-// TODO: add feature queries here as your schema grows.
+// API Config helpers
+export async function upsertApiConfig(config: InsertApiConfig) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.insert(apiConfigs).values(config).onDuplicateKeyUpdate({
+    set: {
+      ...config,
+      updatedAt: new Date(),
+    },
+  });
+}
+
+export async function getApiConfig(userId: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db.select().from(apiConfigs).where(eq(apiConfigs.userId, userId)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+// Post helpers
+export async function createPost(post: InsertPost) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.insert(posts).values(post);
+}
+
+export async function updatePost(id: string, updates: Partial<InsertPost>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.update(posts).set({ ...updates, updatedAt: new Date() }).where(eq(posts.id, id));
+}
+
+export async function getPost(id: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db.select().from(posts).where(eq(posts.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getUserPosts(userId: string, limit = 50) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return await db.select().from(posts).where(eq(posts.userId, userId)).orderBy(desc(posts.createdAt)).limit(limit);
+}
+
+// Scheduled Post helpers
+export async function createScheduledPost(post: InsertScheduledPost) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.insert(scheduledPosts).values(post);
+}
+
+export async function updateScheduledPost(id: string, updates: Partial<InsertScheduledPost>) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  await db.update(scheduledPosts).set({ ...updates, updatedAt: new Date() }).where(eq(scheduledPosts.id, id));
+}
+
+export async function getScheduledPost(id: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db.select().from(scheduledPosts).where(eq(scheduledPosts.id, id)).limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getUserScheduledPosts(userId: string) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return await db.select().from(scheduledPosts).where(eq(scheduledPosts.userId, userId)).orderBy(desc(scheduledPosts.scheduledTime));
+}
+
+export async function getPendingScheduledPosts(now: Date) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return await db.select().from(scheduledPosts).where(
+    and(
+      eq(scheduledPosts.status, "pending"),
+      lte(scheduledPosts.scheduledTime, now)
+    )
+  );
+}
+
