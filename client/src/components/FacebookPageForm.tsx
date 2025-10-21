@@ -88,18 +88,23 @@ export function FacebookPageForm({ page, onClose }: FacebookPageFormProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    console.log("handleSubmit called", { pageName, pageId, pageAccessToken: pageAccessToken.substring(0, 10) + "..." });
 
     if (!pageName || !pageId || !pageAccessToken) {
       toast.error("กรุณากรอกข้อมูลให้ครบถ้วน");
       return;
     }
+    
+    console.log("Validation passed, tokenInfo:", tokenInfo);
 
-    if (tokenInfo?.debug?.type !== "PAGE") {
-      toast.error("กรุณาตรวจสอบ Token ให้เป็น Page Access Token");
+    // Optional: Warn if token hasn't been validated
+    if (tokenInfo && tokenInfo.debug?.type !== "PAGE") {
+      toast.error("Token นี้ไม่ใช่ Page Access Token กรุณาตรวจสอบอีกครั้ง");
       return;
     }
 
     if (page) {
+      console.log("Calling updateMutation", page.id);
       updateMutation.mutate({
         id: page.id,
         pageName,
@@ -107,6 +112,8 @@ export function FacebookPageForm({ page, onClose }: FacebookPageFormProps) {
         pageAccessToken,
       });
     } else {
+      console.log("Calling createMutation");
+      toast.info("กำลังบันทึก...");
       createMutation.mutate({
         pageName,
         pageId,
@@ -266,8 +273,12 @@ export function FacebookPageForm({ page, onClose }: FacebookPageFormProps) {
 
           <div className="flex items-center gap-3 pt-4">
             <Button
-              type="submit"
-              disabled={isPending || tokenInfo?.debug?.type !== "PAGE"}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                handleSubmit(e as any);
+              }}
+              disabled={isPending || (tokenInfo && tokenInfo.debug?.type !== "PAGE")}
               className="flex-1"
             >
               {isPending ? (
