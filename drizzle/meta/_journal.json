@@ -15,6 +15,20 @@
       "when": 1761023350114,
       "tag": "0001_soft_xorn",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1761024632365,
+      "tag": "0002_condemned_black_panther",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1761028139366,
+      "tag": "0003_sturdy_tag",
+      "breakpoints": true
     }
   ]
 }

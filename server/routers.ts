@@ -7,6 +7,10 @@ import { nanoid } from "nanoid";
 import * as db from "./db";
 import { generateImage } from "./_core/imageGeneration";
 import { TRPCError } from "@trpc/server";
+import { postToMultiplePlatforms } from "./socialMedia";
+import { facebookPages } from "../drizzle/schema";
+import { eq, and, desc } from "drizzle-orm";
+import { getDb } from "./db";
 
 export const appRouter = router({
   system: systemRouter,
@@ -67,6 +71,7 @@ export const appRouter = router({
     create: protectedProcedure
       .input(z.object({
         prompt: z.string(),
+        referenceImageUrl: z.string().optional(),
         caption: z.string().optional(),
         affiliateLink: z.string().optional(),
         platforms: z.array(z.enum(["facebook", "instagram", "x", "tiktok"])),
@@ -79,6 +84,7 @@ export const appRouter = router({
           id: postId,
           userId: ctx.user.id,
           prompt: input.prompt,
+          referenceImageUrl: input.referenceImageUrl,
           caption: input.caption,
           affiliateLink: input.affiliateLink,
           status: "generating",
@@ -86,7 +92,14 @@ export const appRouter = router({
 
         // Generate image in background
         try {
-          const { url: imageUrl } = await generateImage({ prompt: input.prompt });
+          const generateParams: any = { prompt: input.prompt };
+          if (input.referenceImageUrl) {
+            generateParams.originalImages = [{
+              url: input.referenceImageUrl,
+              mimeType: "image/jpeg"
+            }];
+          }
+          const { url: imageUrl } = await generateImage(generateParams);
           await db.updatePost(postId, {
             imageUrl,
             status: "ready",
@@ -106,6 +119,7 @@ export const appRouter = router({
       .input(z.object({
         postId: z.string(),
         platforms: z.array(z.enum(["facebook", "instagram", "x", "tiktok"])),
+        facebookPageIds: z.array(z.string()).optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const post = await db.getPost(input.postId);
@@ -130,54 +144,225 @@ export const appRouter = router({
           ? `${post.caption}\n\n${post.affiliateLink}` 
           : post.caption;
 
-        const results: Record<string, { success: boolean; error?: string; postId?: string }> = {};
-
-        // Post to each platform
-        // Note: Actual API calls would be implemented here
-        // For now, we'll simulate the posting
-        for (const platform of input.platforms) {
-          try {
-            // Simulate API call
-            await new Promise(resolve => setTimeout(resolve, 1000));
+        // Handle Facebook Pages
+        let facebookResults: any = null;
+        if (input.platforms.includes("facebook")) {
+          const drizzleDb = await getDb();
+          if (!drizzleDb) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+          
+          const selectedPageIds = input.facebookPageIds || [];
+          
+          if (selectedPageIds.length === 0) {
+            // ถ้าไม่เลือก ให้โพสต์ทุก Page ที่ active
+            const pages = await drizzleDb.select()
+              .from(facebookPages)
+              .where(
+                and(
+                  eq(facebookPages.userId, ctx.user.id),
+                  eq(facebookPages.isActive, true)
+                )
+              );
+            selectedPageIds.push(...pages.map(p => p.id));
+          }
+          
+          if (selectedPageIds.length > 0) {
+            // โพสต์ไปยังทุก Page ที่เลือก (parallel)
+            const pageResults = await Promise.all(
+              selectedPageIds.map(async (id) => {
+                const pageData = await drizzleDb.select()
+                  .from(facebookPages)
+                  .where(eq(facebookPages.id, id))
+                  .limit(1);
+                
+                if (!pageData[0]) return null;
+                
+                try {
+                  const { postToFacebook } = await import("./socialMedia");
+                  const result = await postToFacebook({
+                    pageId: pageData[0].pageId,
+                    accessToken: pageData[0].pageAccessToken,
+                    message: fullCaption || "",
+                    imageUrl: post.imageUrl || "",
+                  });
+                  
+                  return {
+                    pageName: pageData[0].pageName,
+                    pageId: pageData[0].pageId,
+                    ...result,
+                  };
+                } catch (error) {
+                  console.error(`Facebook posting error for ${pageData[0].pageName}:`, error);
+                  return {
+                    pageName: pageData[0].pageName,
+                    pageId: pageData[0].pageId,
+                    success: false,
+                    error: error instanceof Error ? error.message : "Unknown error",
+                  };
+                }
+              })
+            );
             
-            results[platform] = {
-              success: true,
-              postId: nanoid(),
+            facebookResults = {
+              success: pageResults.some(r => r?.success),
+              pages: pageResults.filter(r => r !== null),
             };
+          }
+        }
 
-            // Update post status
+        // Post to other social media platforms
+        const otherPlatforms = input.platforms.filter(p => p !== "facebook");
+        const results: any = {};
+        
+        if (otherPlatforms.length > 0) {
+          const otherResults = await postToMultiplePlatforms(otherPlatforms, {
+            message: fullCaption || "",
+            imageUrl: post.imageUrl || "",
+            facebookPageId: apiConfig.facebookPageId || undefined,
+            facebookToken: apiConfig.facebookToken || undefined,
+            instagramUserId: apiConfig.instagramUserId || undefined,
+            instagramToken: apiConfig.instagramToken || undefined,
+            xToken: apiConfig.xToken || undefined,
+            tiktokApiKey: apiConfig.uploadPostApiKey || undefined,
+            tiktokUsername: apiConfig.uploadPostUser || undefined,
+          });
+          Object.assign(results, otherResults);
+        }
+        
+        if (facebookResults) {
+          results.facebook = facebookResults;
+        }
+
+        // Update post status for each platform
+        for (const [platform, result] of Object.entries(results)) {
+          const platformResult = result as any;
+          if (platformResult.success) {
             if (platform === "facebook") {
               await db.updatePost(input.postId, {
                 postedToFacebook: true,
-                facebookPostId: results[platform].postId,
+                facebookPostId: platformResult.postId || "multiple",
               });
             } else if (platform === "instagram") {
               await db.updatePost(input.postId, {
                 postedToInstagram: true,
-                instagramPostId: results[platform].postId,
+                instagramPostId: platformResult.postId,
               });
             } else if (platform === "x") {
               await db.updatePost(input.postId, {
                 postedToX: true,
-                xPostId: results[platform].postId,
+                xPostId: platformResult.postId,
               });
             } else if (platform === "tiktok") {
               await db.updatePost(input.postId, {
                 postedToTiktok: true,
-                tiktokPostId: results[platform].postId,
+                tiktokPostId: platformResult.postId,
               });
             }
-          } catch (error) {
-            results[platform] = {
-              success: false,
-              error: error instanceof Error ? error.message : "Unknown error",
-            };
           }
         }
 
         await db.updatePost(input.postId, { status: "completed" });
 
         return results;
+      }),
+  }),
+
+  facebookPages: router({
+    list: protectedProcedure.query(async ({ ctx }) => {
+      const drizzleDb = await getDb();
+      if (!drizzleDb) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+      
+      return await drizzleDb.select()
+        .from(facebookPages)
+        .where(eq(facebookPages.userId, ctx.user.id))
+        .orderBy(desc(facebookPages.createdAt));
+    }),
+
+    create: protectedProcedure
+      .input(z.object({
+        pageName: z.string(),
+        pageId: z.string(),
+        pageAccessToken: z.string(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const drizzleDb = await getDb();
+        if (!drizzleDb) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        
+        const id = nanoid();
+
+        await drizzleDb.insert(facebookPages).values({
+          id,
+          userId: ctx.user.id,
+          pageName: input.pageName,
+          pageId: input.pageId,
+          pageAccessToken: input.pageAccessToken,
+          isActive: true,
+        });
+
+        return { id };
+      }),
+
+    update: protectedProcedure
+      .input(z.object({
+        id: z.string(),
+        pageName: z.string().optional(),
+        pageId: z.string().optional(),
+        pageAccessToken: z.string().optional(),
+        isActive: z.boolean().optional(),
+      }))
+      .mutation(async ({ ctx, input }) => {
+        const drizzleDb = await getDb();
+        if (!drizzleDb) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        
+        const { id, ...updates } = input;
+
+        const page = await drizzleDb.select()
+          .from(facebookPages)
+          .where(
+            and(
+              eq(facebookPages.id, id),
+              eq(facebookPages.userId, ctx.user.id)
+            )
+          )
+          .limit(1);
+
+        if (!page[0]) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+
+        await drizzleDb.update(facebookPages)
+          .set({
+            ...updates,
+            updatedAt: new Date(),
+          })
+          .where(eq(facebookPages.id, id));
+
+        return { success: true };
+      }),
+
+    delete: protectedProcedure
+      .input(z.object({ id: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const drizzleDb = await getDb();
+        if (!drizzleDb) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Database not available" });
+        
+        const page = await drizzleDb.select()
+          .from(facebookPages)
+          .where(
+            and(
+              eq(facebookPages.id, input.id),
+              eq(facebookPages.userId, ctx.user.id)
+            )
+          )
+          .limit(1);
+
+        if (!page[0]) {
+          throw new TRPCError({ code: "NOT_FOUND" });
+        }
+
+        await drizzleDb.delete(facebookPages)
+          .where(eq(facebookPages.id, input.id));
+
+        return { success: true };
       }),
   }),
 
@@ -189,6 +374,7 @@ export const appRouter = router({
     create: protectedProcedure
       .input(z.object({
         prompt: z.string(),
+        referenceImageUrl: z.string().optional(),
         caption: z.string().optional(),
         affiliateLink: z.string().optional(),
         platforms: z.array(z.enum(["facebook", "instagram", "x", "tiktok"])),
@@ -201,6 +387,7 @@ export const appRouter = router({
           id,
           userId: ctx.user.id,
           prompt: input.prompt,
+          referenceImageUrl: input.referenceImageUrl,
           caption: input.caption,
           affiliateLink: input.affiliateLink,
           platforms: JSON.stringify(input.platforms),

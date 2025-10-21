@@ -11,16 +11,21 @@ import { Loader2, Sparkles, Calendar, Image as ImageIcon } from "lucide-react";
 import { useState } from "react";
 import { Link } from "wouter";
 import { toast } from "sonner";
+import { FacebookPageSelector } from "@/components/FacebookPageSelector";
 
 export default function Home() {
   const { user, isAuthenticated } = useAuth();
   const [prompt, setPrompt] = useState("");
+  const [referenceImage, setReferenceImage] = useState<File | null>(null);
+  const [referenceImagePreview, setReferenceImagePreview] = useState<string>("");
   const [caption, setCaption] = useState("");
   const [affiliateLink, setAffiliateLink] = useState("");
   const [platforms, setPlatforms] = useState<string[]>([]);
   const [isScheduled, setIsScheduled] = useState(false);
   const [scheduledDate, setScheduledDate] = useState("");
   const [scheduledTime, setScheduledTime] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
+  const [selectedFacebookPageIds, setSelectedFacebookPageIds] = useState<string[]>([]);
 
   const createPostMutation = trpc.posts.create.useMutation({
     onSuccess: async (data) => {
@@ -32,6 +37,7 @@ export default function Home() {
           await postToSocialMutation.mutateAsync({
             postId: data.id,
             platforms: platforms as any,
+            facebookPageIds: selectedFacebookPageIds.length > 0 ? selectedFacebookPageIds : undefined,
           });
         } catch (error) {
           toast.error("เกิดข้อผิดพลาดในการโพสต์");
@@ -43,6 +49,7 @@ export default function Home() {
       setCaption("");
       setAffiliateLink("");
       setPlatforms([]);
+      setSelectedFacebookPageIds([]);
     },
     onError: (error) => {
       toast.error(error.message || "เกิดข้อผิดพลาดในการสร้างรูปภาพ");
@@ -50,8 +57,41 @@ export default function Home() {
   });
 
   const postToSocialMutation = trpc.posts.postToSocial.useMutation({
-    onSuccess: () => {
-      toast.success("โพสต์สำเร็จแล้ว");
+    onSuccess: (data) => {
+      console.log("Post to social results:", data);
+      
+      // Check results for each platform
+      const successPlatforms: string[] = [];
+      const failedPlatforms: string[] = [];
+      
+      Object.entries(data).forEach(([platform, result]) => {
+        const platformResult = result as any;
+        if (platformResult.success) {
+          successPlatforms.push(platform);
+        } else {
+          failedPlatforms.push(platform);
+          console.error(`${platform} error:`, platformResult.error);
+        }
+      });
+      
+      if (successPlatforms.length > 0) {
+        toast.success(`โพสต์สำเร็จ: ${successPlatforms.join(", ")}`);
+      }
+      
+      if (failedPlatforms.length > 0) {
+        toast.error(`โพสต์ล้มเหลว: ${failedPlatforms.join(", ")}`);
+        // Show detailed errors
+        failedPlatforms.forEach(platform => {
+          const error = data[platform]?.error;
+          if (error) {
+            toast.error(`${platform}: ${error}`);
+          }
+        });
+      }
+    },
+    onError: (error) => {
+      console.error("Post to social error:", error);
+      toast.error(error.message || "เกิดข้อผิดพลาดในการโพสต์");
     },
   });
 
@@ -62,6 +102,7 @@ export default function Home() {
       setCaption("");
       setAffiliateLink("");
       setPlatforms([]);
+      setSelectedFacebookPageIds([]);
       setIsScheduled(false);
       setScheduledDate("");
       setScheduledTime("");
@@ -79,6 +120,27 @@ export default function Home() {
     );
   };
 
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (file.size > 10 * 1024 * 1024) {
+        toast.error("ไฟล์รูปภาพต้องไม่เกิน 10MB");
+        return;
+      }
+      setReferenceImage(file);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setReferenceImagePreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleRemoveImage = () => {
+    setReferenceImage(null);
+    setReferenceImagePreview("");
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -90,6 +152,34 @@ export default function Home() {
     if (platforms.length === 0) {
       toast.error("กรุณาเลือกอย่างน้อย 1 แพลตฟอร์ม");
       return;
+    }
+
+    // Upload reference image if provided
+    let referenceImageUrl: string | undefined;
+    if (referenceImage) {
+      setIsUploading(true);
+      try {
+        const formData = new FormData();
+        formData.append("file", referenceImage);
+        
+        const uploadResponse = await fetch("/api/upload", {
+          method: "POST",
+          body: formData,
+        });
+        
+        if (!uploadResponse.ok) {
+          throw new Error("ไม่สามารถอัปโหลดรูปภาพได้");
+        }
+        
+        const uploadData = await uploadResponse.json();
+        referenceImageUrl = uploadData.url;
+      } catch (error) {
+        toast.error("เกิดข้อผิดพลาดในการอัปโหลดรูปภาพ");
+        setIsUploading(false);
+        return;
+      } finally {
+        setIsUploading(false);
+      }
     }
 
     if (isScheduled) {
@@ -106,6 +196,7 @@ export default function Home() {
 
       createScheduledMutation.mutate({
         prompt,
+        referenceImageUrl,
         caption,
         affiliateLink,
         platforms: platforms as any,
@@ -114,6 +205,7 @@ export default function Home() {
     } else {
       createPostMutation.mutate({
         prompt,
+        referenceImageUrl,
         caption,
         affiliateLink,
         platforms: platforms as any,
@@ -193,9 +285,40 @@ export default function Home() {
                     placeholder="เช่น: A serene landscape with mountains at sunset"
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
-                    className="min-h-24 bg-white/5 border-white/10 text-white placeholder:text-white/40"
-                    disabled={isLoading}
+                    className="min-h-[100px] bg-white/5 border-white/10 text-white placeholder:text-white/40"
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="reference-image" className="text-white">รูปภาพอ้างอิง (ไม่บังคับ)</Label>
+                  <div className="space-y-4">
+                    <Input
+                      id="reference-image"
+                      type="file"
+                      accept="image/*"
+                      onChange={handleImageUpload}
+                      disabled={isUploading}
+                      className="bg-white/5 border-white/10 text-white file:text-white"
+                    />
+                    {referenceImagePreview && (
+                      <div className="relative w-full max-w-md">
+                        <img
+                          src={referenceImagePreview}
+                          alt="Reference"
+                          className="w-full h-auto rounded-lg border border-white/10"
+                        />
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          className="absolute top-2 right-2"
+                          onClick={handleRemoveImage}
+                        >
+                          ลบรูป
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -232,16 +355,24 @@ export default function Home() {
                       { id: "x", label: "X (Twitter)" },
                       { id: "tiktok", label: "TikTok" },
                     ].map((platform) => (
-                      <div key={platform.id} className="flex items-center space-x-2 bg-white/5 p-3 rounded-lg border border-white/10">
-                        <Checkbox
-                          id={platform.id}
-                          checked={platforms.includes(platform.id)}
-                          onCheckedChange={() => handlePlatformToggle(platform.id)}
-                          disabled={isLoading}
-                        />
-                        <Label htmlFor={platform.id} className="text-white cursor-pointer">
-                          {platform.label}
-                        </Label>
+                      <div key={platform.id} className="space-y-2">
+                        <div className="flex items-center space-x-2 bg-white/5 p-3 rounded-lg border border-white/10">
+                          <Checkbox
+                            id={platform.id}
+                            checked={platforms.includes(platform.id)}
+                            onCheckedChange={() => handlePlatformToggle(platform.id)}
+                            disabled={isLoading}
+                          />
+                          <Label htmlFor={platform.id} className="text-white cursor-pointer">
+                            {platform.label}
+                          </Label>
+                        </div>
+                        {platform.id === "facebook" && platforms.includes("facebook") && (
+                          <FacebookPageSelector
+                            selectedPageIds={selectedFacebookPageIds}
+                            onChange={setSelectedFacebookPageIds}
+                          />
+                        )}
                       </div>
                     ))}
                   </div>

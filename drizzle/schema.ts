@@ -52,6 +52,7 @@ export const posts = mysqlTable("posts", {
   userId: varchar("userId", { length: 64 }).notNull(),
   
   prompt: text("prompt").notNull(),
+  referenceImageUrl: varchar("referenceImageUrl", { length: 512 }),
   caption: text("caption"),
   affiliateLink: varchar("affiliateLink", { length: 512 }),
   imageUrl: varchar("imageUrl", { length: 512 }),
@@ -87,6 +88,7 @@ export const scheduledPosts = mysqlTable("scheduled_posts", {
   userId: varchar("userId", { length: 64 }).notNull(),
   
   prompt: text("prompt").notNull(),
+  referenceImageUrl: varchar("referenceImageUrl", { length: 512 }),
   caption: text("caption"),
   affiliateLink: varchar("affiliateLink", { length: 512 }),
   
@@ -106,4 +108,25 @@ export const scheduledPosts = mysqlTable("scheduled_posts", {
 
 export type ScheduledPost = typeof scheduledPosts.$inferSelect;
 export type InsertScheduledPost = typeof scheduledPosts.$inferInsert;
+
+/**
+ * Facebook Pages table
+ * Stores multiple Facebook Pages for each user
+ */
+export const facebookPages = mysqlTable("facebook_pages", {
+  id: varchar("id", { length: 64 }).primaryKey(),
+  userId: varchar("userId", { length: 64 }).notNull(),
+  
+  pageName: varchar("pageName", { length: 255 }).notNull(),
+  pageId: varchar("pageId", { length: 255 }).notNull(),
+  pageAccessToken: text("pageAccessToken").notNull(),
+  
+  isActive: boolean("isActive").default(true).notNull(),
+  
+  createdAt: timestamp("createdAt").defaultNow(),
+  updatedAt: timestamp("updatedAt").defaultNow(),
+});
+
+export type FacebookPage = typeof facebookPages.$inferSelect;
+export type InsertFacebookPage = typeof facebookPages.$inferInsert;
 
