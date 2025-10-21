@@ -24,7 +24,8 @@ export const appRouter = router({
 
   apiConfig: router({
     get: protectedProcedure.query(async ({ ctx }) => {
-      return await db.getApiConfig(ctx.user.id);
+      const config = await db.getApiConfig(ctx.user.id);
+      return config || null;
     }),
 
     save: protectedProcedure
